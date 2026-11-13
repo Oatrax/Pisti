@@ -1,11 +1,11 @@
 import { useState } from 'react';
-import { Spade, Users, LogIn } from 'lucide-react';
+import { Spade, Users, LogIn, Bot } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 const NAME_KEY = 'pisti.name';
 const savedName = () => { try { return localStorage.getItem(NAME_KEY) || ''; } catch { return ''; } };
 
-export default function Home({ onCreate, onJoin, error, connected }) {
+export default function Home({ onCreate, onJoin, onSolo, error, connected }) {
   const [name, setName] = useState(savedName);
   const [code, setCode] = useState('');
   const [size, setSize] = useState(2);
@@ -42,6 +42,14 @@ export default function Home({ onCreate, onJoin, error, connected }) {
             className="mt-1 w-full rounded-lg border border-white/15 bg-black/30 px-3 py-2 outline-none focus:border-gold"
           />
         </label>
+
+        <button
+          disabled={!ready}
+          onClick={() => { remember(); onSolo({ name, targetScore: target }); }}
+          className="flex w-full items-center justify-center gap-2 rounded-lg bg-gold py-3 font-semibold text-felt-900 shadow hover:brightness-105 disabled:opacity-40"
+        >
+          <Bot className="h-5 w-5" /> Play solo vs a bot
+        </button>
 
         <div className="space-y-3 rounded-xl bg-black/20 p-4">
           <h2 className="flex items-center gap-2 text-sm font-semibold text-gold"><Users className="h-4 w-4" /> New room</h2>

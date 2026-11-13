@@ -12,7 +12,7 @@ export default function App() {
 
   return (
     <div className="h-full">
-      {!room && <Home onCreate={r.create} onJoin={r.join} error={r.error} connected={r.connected} />}
+      {!room && <Home onCreate={r.create} onJoin={r.join} onSolo={r.solo} error={r.error} connected={r.connected} />}
       {room && room.status === 'lobby' && <Lobby room={room} actions={r} error={r.error} speaking={voice.speaking} />}
       {room && room.game && room.status !== 'lobby' && <Table room={room} actions={r} capture={r.capture} charging={r.charging} speaking={voice.speaking} />}
       {room && <VoiceBar voice={voice} />}

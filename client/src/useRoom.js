@@ -105,6 +105,13 @@ export function useRoom() {
     leave: () => run('room:leave', {}, () => { save(null); roomRef.current = null; setRoom(null); }),
     settings: (p) => run('room:settings', p),
     start: () => run('room:start'),
+    addBot: () => run('room:addBot'),
+    removeBot: (seat) => run('room:removeBot', { seat }),
+    // One click single-player: a 2-player room with a bot, started immediately.
+    solo: async (p) => {
+      if (!(await run('room:create', { ...p, maxPlayers: 2 }, remember))) return;
+      if (await run('room:addBot')) await run('room:start');
+    },
     play: (cardId) => run('game:play', { cardId }),
     charge: (level) => socket.volatile.emit('pisti:charging', { level }),
     slam: (chargeLevel) => run('pisti:slam', { chargeLevel }),

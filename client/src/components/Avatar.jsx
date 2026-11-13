@@ -1,9 +1,10 @@
 import { AnimatePresence, motion } from 'framer-motion';
+import { Bot } from 'lucide-react';
 
 const COLORS = ['bg-crimson', 'bg-sky-700', 'bg-amber-700', 'bg-violet-700'];
 
 /** Round initial avatar. A green ring pulses around it while that player is speaking. */
-export default function Avatar({ name, seat, speaking = false, inVoice = false, connected = true, size = 'md' }) {
+export default function Avatar({ name, seat, speaking = false, inVoice = false, connected = true, bot = false, size = 'md' }) {
   const dim = size === 'sm' ? 'h-7 w-7 text-xs' : 'h-10 w-10 text-base';
   return (
     <div className={`relative shrink-0 ${dim}`}>
@@ -20,7 +21,7 @@ export default function Avatar({ name, seat, speaking = false, inVoice = false, 
         )}
       </AnimatePresence>
       <div className={`relative flex h-full w-full items-center justify-center rounded-full font-bold uppercase text-white shadow ${COLORS[seat % 4]}`}>
-        {name?.[0] ?? '?'}
+        {bot ? <Bot className={size === 'sm' ? 'h-4 w-4' : 'h-5 w-5'} /> : name?.[0] ?? '?'}
       </div>
       {(!connected || inVoice) && (
         <span

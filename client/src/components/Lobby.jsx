@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Copy, Check, Crown, LogOut, Play, UserRound } from 'lucide-react';
+import { Bot, Copy, Check, Crown, LogOut, Play, UserRound, X } from 'lucide-react';
 import { teamOf } from '../util.js';
 import Avatar from './Avatar.jsx';
 
@@ -31,11 +31,25 @@ export default function Lobby({ room, actions, error, speaking = {} }) {
           {slots.map((p, s) => (
             <li key={s} className="flex items-center gap-3 rounded-lg bg-black/25 px-3 py-2.5">
               {p ? (
-                <Avatar name={p.name} seat={p.seat} size="sm" speaking={!!speaking[p.seat]} inVoice={!!room.voice?.[p.seat]} connected={p.connected} />
+                <Avatar name={p.name} seat={p.seat} bot={p.bot} size="sm" speaking={!!speaking[p.seat]} inVoice={!!room.voice?.[p.seat]} connected={p.connected} />
               ) : (
                 <UserRound className="h-7 w-7 text-white/25" />
               )}
-              <span className={p ? '' : 'italic text-white/40'}>{p ? p.name : 'Waiting for player…'}</span>
+              {p || !isHost ? (
+                <span className={p ? '' : 'italic text-white/40'}>{p ? p.name : 'Waiting for player…'}</span>
+              ) : (
+                <>
+                  <span className="italic text-white/40">Waiting for player…</span>
+                  <button onClick={actions.addBot} className="ml-auto flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-xs hover:bg-white/20">
+                    <Bot className="h-3.5 w-3.5" /> Add bot
+                  </button>
+                </>
+              )}
+              {p?.bot && isHost && (
+                <button onClick={() => actions.removeBot(p.seat)} className="ml-auto rounded-full p-1 hover:bg-white/15" title="Remove bot">
+                  <X className="h-4 w-4" />
+                </button>
+              )}
               {p && p.seat === room.hostSeat && <Crown className="h-4 w-4 text-gold" />}
               {p && p.seat === room.mySeat && <span className="text-xs text-white/50">(you)</span>}
               {room.maxPlayers === 4 && (

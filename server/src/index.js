@@ -93,6 +93,8 @@ io.on('connection', (socket) => {
     const s = need();
     manager.updateSettings(s.code, s.token, { targetScore: p.targetScore, maxPlayers: p.maxPlayers });
   });
+  on('room:addBot', () => manager.addBot(need().code, need().token));
+  on('room:removeBot', (p) => manager.removeBot(need().code, need().token, Number(p.seat)));
   on('room:start', () => manager.start(need().code, need().token));
   on('game:play', (p) => manager.play(need().code, need().token, String(p.cardId)));
   on('pisti:charging', (p) => manager.charge(need().code, need().token, p.level));

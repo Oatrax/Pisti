@@ -194,7 +194,7 @@ function OpponentSeat({ player, game, pos, isTurn, isPartner, dealKey, speaking,
   return (
     <div className={`flex ${vertical ? 'flex-col' : 'flex-col'} items-center gap-2`}>
       <div className={`flex items-center gap-2 rounded-full px-3 py-1 text-sm transition ${isTurn ? 'bg-gold text-felt-900 shadow-[0_0_18px_rgba(227,184,87,.7)]' : 'bg-black/35'}`}>
-        <Avatar name={player.name} seat={player.seat} size="sm" speaking={speaking} inVoice={inVoice} connected={player.connected} />
+        <Avatar name={player.name} seat={player.seat} bot={player.bot} size="sm" speaking={speaking} inVoice={inVoice} connected={player.connected} />
         <span className="max-w-[7rem] truncate font-semibold">{player.name}</span>
         {isPartner && <span className="rounded bg-black/30 px-1 text-[10px] uppercase tracking-wide">partner</span>}
       </div>

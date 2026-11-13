@@ -1,5 +1,6 @@
 import { randomBytes, randomInt } from 'node:crypto';
 import { PistiGame, GameError } from './engine/game.js';
+import { chooseCard } from './engine/bot.js';
 
 export class RoomError extends Error {
   constructor(code, message) {
@@ -11,6 +12,7 @@ export class RoomError extends Error {
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // no I / O (look like 1 / 0)
 const TARGETS = [101, 151];
 const STALE_MS = 10 * 60 * 1000;
+const BOT_NAMES = ['Kemal', 'Zeynep', 'Can', 'Elif', 'Deniz', 'Ayşe', 'Mehmet', 'Selin'];
 
 function cleanName(name) {
   const n = String(name ?? '').replace(/\s+/g, ' ').trim().slice(0, 16);
@@ -23,12 +25,14 @@ export class RoomManager {
    * @param {{onUpdate?: (room, events:Array)=>void, autoAdvanceMs?: number|null}} opts
    *   autoAdvanceMs: delay before the next round starts by itself after a round ends (null = manual only)
    */
-  constructor({ onUpdate = () => {}, onCharge = () => {}, autoAdvanceMs = 9000, primeTimeoutMs = 4000, disconnectGraceMs = 30000 } = {}) {
+  constructor({ onUpdate = () => {}, onCharge = () => {}, autoAdvanceMs = 9000, primeTimeoutMs = 4000, disconnectGraceMs = 30000, botDelayMs = 1500, botSlamMs = 1000 } = {}) {
     this.rooms = new Map();
     this.onUpdate = onUpdate;
     this.onCharge = onCharge;
     this.primeTimeoutMs = primeTimeoutMs;
     this.disconnectGraceMs = disconnectGraceMs;
+    this.botDelayMs = botDelayMs;
+    this.botSlamMs = botSlamMs;
     this.autoAdvanceMs = autoAdvanceMs;
   }
 
@@ -58,6 +62,7 @@ export class RoomManager {
   #notify(room, events = []) {
     room.lastActivity = Date.now();
     this.#watchTurn(room);
+    this.#botTurn(room);
     this.onUpdate(room, events);
   }
 
@@ -68,7 +73,7 @@ export class RoomManager {
   #watchTurn(room) {
     const g = room.game;
     const cur = g && g.phase === 'playing' && !g.primed ? room.players.find((p) => p.seat === g.turn) : null;
-    const key = cur && !cur.socketId ? `${g.roundNo}:${g.turn}:${g.deckCount ?? g.deck.length}:${g.hands[g.turn].length}` : null;
+    const key = cur && !cur.socketId && !cur.bot ? `${g.roundNo}:${g.turn}:${g.deckCount ?? g.deck.length}:${g.hands[g.turn].length}` : null;
     if (key === room.watchKey) return;
     clearTimeout(room.watchTimer);
     room.watchKey = key;
@@ -87,6 +92,82 @@ export class RoomManager {
     const events = g.playCard(g.turn, card.id);
     events.unshift({ type: 'autoplay', seat: events[0].seat ?? g.turn });
     this.#afterEvents(room, events);
+  }
+
+  // ---------- bots ----------
+
+  /** Schedule the bot whose turn it is (or whose pişti is waiting for its slam). */
+  #botTurn(room) {
+    const g = room.game;
+    const cur = g && g.phase === 'playing' ? room.players.find((p) => p.seat === g.turn) : null;
+    const key = cur?.bot
+      ? `${g.primed ? 'slam:' : ''}${g.roundNo}:${g.turn}:${g.deck.length}:${g.hands[g.turn].length}`
+      : null;
+    if (key === room.botKey) return;
+    clearTimeout(room.botTimer);
+    room.botKey = key;
+    if (!key) return;
+    const delay = g.primed ? 0 : this.botDelayMs * (0.7 + Math.random() * 0.6); // human-ish pacing
+    room.botTimer = setTimeout(() => (g.primed ? this.#botSlam(room, key) : this.#botPlay(room, key)), delay);
+    room.botTimer.unref?.();
+  }
+
+  #botPlay(room, key) {
+    const g = room.game;
+    if (room.botKey !== key || !g || g.phase !== 'playing' || g.primed) return;
+    const seat = g.turn;
+    const card = chooseCard(g.viewFor(seat));
+    this.#afterPlay(room, g.playCard(seat, card.id, { prime: true }));
+  }
+
+  /** A bot "charges" its slam visibly (relayed like a human's), then releases. */
+  #botSlam(room, key) {
+    const g = room.game;
+    if (room.botKey !== key || !g?.primed) return;
+    const seat = g.primed.seat;
+    const total = this.botSlamMs * (0.6 + Math.random() * 0.6);
+    const target = 0.45 + Math.random() * 0.55;
+    const steps = Math.max(1, Math.round(total / 90));
+    let i = 0;
+    const tick = () => {
+      if (room.botKey !== key || !g.primed) return;
+      i += 1;
+      const level = (target * i) / steps;
+      g.setCharge(seat, level);
+      this.onCharge(room, seat, level);
+      if (i < steps) {
+        room.botTimer = setTimeout(tick, total / steps);
+        room.botTimer.unref?.();
+      } else {
+        clearTimeout(room.primeTimer);
+        this.#afterEvents(room, g.slam(seat, level));
+      }
+    };
+    room.botTimer = setTimeout(tick, total / steps);
+    room.botTimer.unref?.();
+  }
+
+  addBot(code, token) {
+    const room = this.#room(code);
+    this.#requireHost(room, this.#player(room, token));
+    if (room.status !== 'lobby') throw new RoomError('IN_PROGRESS', 'Bots can only be added in the lobby');
+    const seat = this.#freeSeat(room);
+    if (seat === -1) throw new RoomError('ROOM_FULL', 'Room is full');
+    const used = new Set(room.players.map((p) => p.name));
+    const name = `Bot ${BOT_NAMES.find((n) => !used.has(`Bot ${n}`)) ?? randomInt(100, 999)}`;
+    room.players.push({ token: randomBytes(16).toString('hex'), seat, name, socketId: null, bot: true });
+    room.players.sort((a, b) => a.seat - b.seat);
+    this.#notify(room);
+  }
+
+  removeBot(code, token, seat) {
+    const room = this.#room(code);
+    this.#requireHost(room, this.#player(room, token));
+    if (room.status !== 'lobby') throw new RoomError('IN_PROGRESS', 'Bots can only be removed in the lobby');
+    const bot = room.players.find((p) => p.bot && p.seat === seat);
+    if (!bot) throw new RoomError('NO_BOT', 'No bot in that seat');
+    room.players = room.players.filter((p) => p !== bot);
+    this.#notify(room);
   }
 
   #requireHost(room, player) {
@@ -172,8 +253,8 @@ export class RoomManager {
     const player = this.#player(room, token);
     if (room.status === 'lobby') {
       room.players = room.players.filter((p) => p !== player);
-      if (room.players.length === 0) return this.#destroy(room);
-      if (room.hostToken === token) room.hostToken = room.players[0].token;
+      if (!room.players.some((p) => !p.bot)) return this.#destroy(room);
+      if (room.hostToken === token) room.hostToken = room.players.find((p) => !p.bot).token;
     } else {
       // Mid-game the seat is held for reconnection.
       player.socketId = null;
@@ -211,6 +292,7 @@ export class RoomManager {
   }
 
   #destroy(room) {
+    clearTimeout(room.botTimer);
     clearTimeout(room.timer);
     clearTimeout(room.primeTimer);
     clearTimeout(room.watchTimer);
@@ -249,6 +331,8 @@ export class RoomManager {
   #newGame(room) {
     clearTimeout(room.timer);
     clearTimeout(room.primeTimer);
+    clearTimeout(room.botTimer);
+    room.botKey = null;
     room.nextAt = null;
     room.game = new PistiGame({ playerCount: room.maxPlayers, targetScore: room.targetScore });
     room.status = 'playing';
@@ -265,6 +349,10 @@ export class RoomManager {
     } catch (e) {
       throw this.#wrap(e);
     }
+    this.#afterPlay(room, events);
+  }
+
+  #afterPlay(room, events) {
     if (room.game.primed) {
       // Auto-slam fallback if the player disconnects or never releases.
       clearTimeout(room.primeTimer);
@@ -360,7 +448,7 @@ export class RoomManager {
       targetScore: room.targetScore,
       mySeat: player.seat,
       hostSeat: room.players.find((p) => p.token === room.hostToken)?.seat ?? null,
-      players: room.players.map((p) => ({ seat: p.seat, name: p.name, connected: p.socketId !== null })),
+      players: room.players.map((p) => ({ seat: p.seat, name: p.name, bot: !!p.bot, connected: !!p.bot || p.socketId !== null })),
       voice: Object.fromEntries(room.players.filter((p) => room.voice.has(p.token)).map((p) => [p.seat, room.voice.get(p.token).sid])),
       game: room.game
         ? { ...room.game.viewFor(player.seat), nextRoundIn: room.nextAt ? Math.max(0, room.nextAt - Date.now()) : 0, nextRoundMs: room.nextAt ? this.autoAdvanceMs : 0 }
