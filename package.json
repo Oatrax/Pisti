@@ -1,0 +1,13 @@
+{
+  "name": "pisti-online",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["server", "client"],
+  "scripts": {
+    "dev": "concurrently -n server,client -c green,cyan \"npm:dev -w server\" \"npm:dev -w client\"",
+    "test": "npm test -w server",
+    "build": "npm run build -w client",
+    "start": "npm start -w server"
+  },
+  "devDependencies": { "concurrently": "^9.1.0" }
+}
