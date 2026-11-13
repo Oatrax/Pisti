@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Copy, Check, Crown, LogOut, Play, UserRound } from 'lucide-react';
 import { teamOf } from '../util.js';
+import Avatar from './Avatar.jsx';
 
-export default function Lobby({ room, actions, error }) {
+export default function Lobby({ room, actions, error, speaking = {} }) {
   const [copied, setCopied] = useState(false);
   const isHost = room.hostSeat === room.mySeat;
   const full = room.players.length === room.maxPlayers;
@@ -29,7 +30,11 @@ export default function Lobby({ room, actions, error }) {
         <ul className="space-y-2">
           {slots.map((p, s) => (
             <li key={s} className="flex items-center gap-3 rounded-lg bg-black/25 px-3 py-2.5">
-              <UserRound className={`h-5 w-5 ${p ? 'text-gold' : 'text-white/25'}`} />
+              {p ? (
+                <Avatar name={p.name} seat={p.seat} size="sm" speaking={!!speaking[p.seat]} inVoice={!!room.voice?.[p.seat]} connected={p.connected} />
+              ) : (
+                <UserRound className="h-7 w-7 text-white/25" />
+              )}
               <span className={p ? '' : 'italic text-white/40'}>{p ? p.name : 'Waiting for player…'}</span>
               {p && p.seat === room.hostSeat && <Crown className="h-4 w-4 text-gold" />}
               {p && p.seat === room.mySeat && <span className="text-xs text-white/50">(you)</span>}

@@ -215,3 +215,50 @@ test('fuzz: full random matches conserve all 52 cards and terminate', () => {
     }
   }
 });
+
+test('capturing the starting pile reveals its face-down cards to that team only', () => {
+  const g = new PistiGame({ playerCount: 2, rng: seeded(11) });
+  const hidden = g.pile.filter((p) => p.faceDown).map((p) => p.card.id);
+  assert.equal(hidden.length, 3);
+  const top = g.pile[3].card;
+  g.turn = 0;
+  g.hands[0] = [c('J' + (top.suit === 'S' ? 'H' : 'S'))]; // a jack always captures
+  g.hands[0].push(c('2H'));
+  g.hands[0] = g.hands[0].filter((x) => x.id !== top.id);
+  g.playCard(0, g.hands[0][0].id);
+  assert.deepEqual(g.viewFor(0).seenFaceDown.map((x) => x.id), hidden);
+  assert.deepEqual(g.viewFor(1).seenFaceDown, []);
+});
+
+test('slam: pişti card is primed face-down, then resolved by slam()', () => {
+  const g = rig({ pile: ['7H'], hands: [['7C', '2H'], ['4S', '5D']] });
+  const ev = g.playCard(0, '7C', { prime: true });
+  assert.deepEqual(ev, [{ type: 'primed', seat: 0 }]);
+  assert.equal(g.pile.length, 1); // nothing captured yet
+  assert.equal(g.hands[0].length, 1); // card left the hand
+  assert.equal(g.turn, 0);
+  assert.deepEqual(g.viewFor(1).primed, { seat: 0 });
+  assert.ok(!JSON.stringify(g.viewFor(1)).includes('7C'), 'primed card stays hidden');
+  assert.throws(() => g.playCard(0, '2H'), (e) => e.code === 'PRIMED');
+  assert.throws(() => g.slam(1, 1), (e) => e.code === 'NOT_YOUR_TURN');
+  const out = g.slam(0, 2.5); // charge is clamped to [0,1]
+  assert.equal(out[0].type, 'slam');
+  assert.equal(out[0].chargeLevel, 1);
+  assert.equal(out[0].pisti, 'pisti');
+  assert.equal(g.pile.length, 0);
+  assert.deepEqual(g.pistiCounts[0], { pisti: 1, jackPisti: 0 });
+  assert.equal(g.turn, 1);
+  assert.equal(g.primed, null);
+  assert.throws(() => g.slam(0, 1), (e) => e.code === 'NOT_PRIMED');
+});
+
+test('slam: jack on a single jack primes; non-pişti captures resolve immediately', () => {
+  const j = rig({ pile: ['JH'], hands: [['JC', '2H'], ['4S']] });
+  j.playCard(0, 'JC', { prime: true });
+  assert.equal(j.slam(0, 0.3)[0].pisti, 'jackPisti');
+  const n = rig({ pile: ['7H'], hands: [['JC', '2H'], ['4S']] });
+  assert.equal(n.playCard(0, 'JC', { prime: true })[1].type, 'capture');
+  assert.equal(n.primed, null);
+  const m = rig({ pile: ['9S', '7H'], hands: [['7C', '2H'], ['4S']] });
+  assert.equal(m.playCard(0, '7C', { prime: true })[1].pisti, null);
+});

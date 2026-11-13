@@ -27,6 +27,7 @@ test('4 socket clients play a full match to completion', async (t) => {
   await once(srv.stdout, 'data');
 
   const cs = [client(), client(), client(), client()];
+  t.after(() => cs.forEach((c) => c.close()));
   const created = await cs[0].call('room:create', { name: 'P0', maxPlayers: 4, targetScore: 101 });
   assert.ok(created.ok && /^[A-Z]{4}$/.test(created.code));
   for (let i = 1; i < 4; i++) assert.ok((await cs[i].call('room:join', { code: created.code, name: `P${i}` })).ok);
@@ -43,9 +44,17 @@ test('4 socket clients play a full match to completion', async (t) => {
       await until(() => cs[0].view.game.phase === 'playing' || cs[0].view.status === 'finished');
       continue;
     }
+    if (g.primed) {
+      // A pişti is waiting for its slam: only the primed player may release it.
+      const other = cs[(g.primed.seat + 1) % 4];
+      assert.equal((await other.call('pisti:slam', { chargeLevel: 1 })).ok, false);
+      assert.ok((await cs[g.primed.seat].call('pisti:slam', { chargeLevel: 0.6 })).ok);
+      await until(() => !cs[0].view.game.primed);
+      continue;
+    }
     const actor = cs[g.turn];
     const wrong = cs[(g.turn + 1) % 4]; // out-of-turn plays must be rejected
-    assert.equal((await wrong.call('game:play', { cardId: wrong.view.game.hand[0].id })).ok, false);
+    assert.equal((await wrong.call('game:play', { cardId: wrong.view.game.hand[0]?.id ?? 'XX' })).ok, false);
     const before = JSON.stringify([g.turn, g.roundNo, g.pile.length, g.handCounts]);
     const res = await actor.call('game:play', { cardId: actor.view.game.hand[0].id });
     assert.ok(res.ok, res.error);

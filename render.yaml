@@ -1,0 +1,12 @@
+# Render Blueprint: one web service that serves the built client and the Socket.io server.
+services:
+  - type: web
+    name: pisti-online
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 22

@@ -9,6 +9,7 @@ export class GameError extends Error {
 }
 
 const HAND_SIZE = 4;
+const clampUnit = (n) => Math.min(1, Math.max(0, Number(n) || 0));
 
 /**
  * Authoritative Pişti engine. Pure logic, no I/O.
@@ -47,6 +48,9 @@ export class PistiGame {
       { pisti: 0, jackPisti: 0 },
     ];
     this.lastCapturer = null;
+    this.primed = null; // { seat, card, charge } while a pişti card waits for its slam
+    // Face-down starting cards a team has seen by capturing them (private to that team).
+    this.seen = [[], []];
     // 4 centre cards: first 3 face-down, 4th (top) face-up.
     this.pile = this.deck.splice(0, 4).map((card, i) => ({ card, faceDown: i < 3 }));
     this.#dealHands();
@@ -68,31 +72,66 @@ export class PistiGame {
 
   // ---------- play ----------
 
-  /** Returns a list of events describing what happened. Throws GameError on illegal moves. */
-  playCard(seat, cardId) {
+  /**
+   * Returns a list of events describing what happened. Throws GameError on illegal moves.
+   * With `prime: true`, a card that would score a pişti is not resolved yet: it is held
+   * face-down ("primed") until slam() is called. Everything else resolves immediately.
+   */
+  playCard(seat, cardId, { prime = false } = {}) {
     if (this.phase !== 'playing') throw new GameError('BAD_PHASE', 'Game is not in play');
+    if (this.primed) throw new GameError('PRIMED', 'Waiting for the pişti slam');
     if (!Number.isInteger(seat) || seat < 0 || seat >= this.playerCount) throw new GameError('BAD_SEAT', 'Unknown seat');
     if (seat !== this.turn) throw new GameError('NOT_YOUR_TURN', 'It is not your turn');
     const idx = this.hands[seat].findIndex((c) => c.id === cardId);
     if (idx === -1) throw new GameError('NOT_IN_HAND', 'You do not hold that card');
 
-    const events = [];
     const [card] = this.hands[seat].splice(idx, 1);
-    events.push({ type: 'play', seat, card });
+    const top = this.pile[this.pile.length - 1];
 
+    // Pişti: exactly one card on the table AND same rank. A Jack only makes a pişti
+    // against a single Jack (rank equality covers that); a Jack on any other single
+    // card is a plain capture.
+    if (prime && this.pile.length === 1 && card.rank === top.card.rank) {
+      this.primed = { seat, card, charge: 0 };
+      return [{ type: 'primed', seat }]; // the card's identity stays private until the slam
+    }
+    const events = [{ type: 'play', seat, card }];
+    this.#resolve(seat, card, events);
+    return events;
+  }
+
+  /** Record the primed player's current charge (0..1), used if the slam times out. */
+  setCharge(seat, level) {
+    if (!this.primed || this.primed.seat !== seat) return false;
+    this.primed.charge = clampUnit(level);
+    return true;
+  }
+
+  /** Release the primed card onto the table with a charge level in [0, 1]. */
+  slam(seat, chargeLevel = 0) {
+    if (!this.primed) throw new GameError('NOT_PRIMED', 'Nothing to slam');
+    if (this.primed.seat !== seat) throw new GameError('NOT_YOUR_TURN', 'It is not your slam');
+    const { card } = this.primed;
+    this.primed = null;
+    const events = [];
+    this.#resolve(seat, card, events);
+    const cap = events.find((e) => e.type === 'capture');
+    events.unshift({ type: 'slam', seat, card, chargeLevel: clampUnit(chargeLevel), pisti: cap.pisti, count: cap.count });
+    return events;
+  }
+
+  #resolve(seat, card, events) {
     const top = this.pile[this.pile.length - 1];
     const captures = top && (card.rank === 'J' || card.rank === top.card.rank);
 
     if (captures) {
       const team = this.teamOf(seat);
-      // Pişti: exactly one card on the table AND same rank. A Jack only makes a
-      // pişti against a single Jack (rank equality covers that); a Jack on any
-      // other single card is a plain capture.
       let pisti = null;
       if (this.pile.length === 1 && card.rank === top.card.rank) {
         pisti = card.rank === 'J' ? 'jackPisti' : 'pisti';
         this.pistiCounts[team][pisti] += 1;
       }
+      this.seen[team].push(...this.pile.filter((p) => p.faceDown).map((p) => p.card));
       const taken = [...this.pile.map((p) => p.card), card];
       this.captured[team].push(...taken);
       this.pile = [];
@@ -103,7 +142,6 @@ export class PistiGame {
     }
 
     this.#advance(events);
-    return events;
   }
 
   #advance(events) {
@@ -159,8 +197,10 @@ export class PistiGame {
       pile: this.pile.map((p) => (p.faceDown ? { faceDown: true } : { card: p.card })),
       hand: seat === null ? [] : this.hands[seat].map((c) => ({ ...c })),
       handCounts: this.hands.map((h) => h.length),
+      seenFaceDown: seat === null ? [] : this.seen[this.teamOf(seat)].map((c) => ({ ...c })),
       capturedCounts: this.captured.map((c) => c.length),
       pisti: this.pistiCounts.map((p) => ({ ...p })),
+      primed: this.primed ? { seat: this.primed.seat } : null,
       lastCapturer: this.lastCapturer,
       lastRound: this.lastRound,
       winnerTeam: this.winnerTeam,

@@ -9,14 +9,19 @@
   --color-crimson: #8c1d2c;
 }
 
-html, body, #root { height: 100%; }
+html, body, #root { height: 100%; height: 100dvh; }
 body {
   margin: 0;
   font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
   color: #f6f1e4;
   background: #07271b;
   overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: manipulation; /* no double-tap zoom delay */
   -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* Green felt with subtle woven grain and a vignette. */
@@ -49,3 +54,5 @@ body {
 @media (min-width: 640px) { .playing-card { --cw: 5.4rem; } }
 .playing-card.card-sm { --cw: 3.1rem; }
 @media (min-width: 640px) { .playing-card.card-sm { --cw: 3.6rem; } }
+
+input, textarea { user-select: text; -webkit-user-select: text; } /* iOS needs this to allow typing */

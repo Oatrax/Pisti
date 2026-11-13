@@ -22,11 +22,21 @@ if (fs.existsSync(dist)) {
 }
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: ORIGIN }, maxHttpBufferSize: 1e4 });
+const io = new Server(server, { cors: { origin: ORIGIN }, maxHttpBufferSize: 1e5 });
 
 const manager = new RoomManager({
+  onCharge(room, seat, level) {
+    io.to(room.code).emit('pisti:charging', { seat, level });
+  },
   onUpdate(room, events) {
-    if (events.length) io.to(room.code).emit('game:events', events);
+    // Slam-mechanic events get their own named channels; the rest go out as game:events.
+    const rest = [];
+    for (const e of events) {
+      if (e.type === 'primed') io.to(room.code).emit('pisti:primed', { seat: e.seat, timeoutMs: e.timeoutMs });
+      else if (e.type === 'slam') io.to(room.code).emit('pisti:slam', e);
+      else rest.push(e);
+    }
+    if (rest.length) io.to(room.code).emit('game:events', rest);
     for (const p of room.players) {
       if (p.socketId) io.to(p.socketId).emit('room:state', manager.viewFor(room, p));
     }
@@ -85,6 +95,16 @@ io.on('connection', (socket) => {
   });
   on('room:start', () => manager.start(need().code, need().token));
   on('game:play', (p) => manager.play(need().code, need().token, String(p.cardId)));
+  on('pisti:charging', (p) => manager.charge(need().code, need().token, p.level));
+  on('pisti:slam', (p) => manager.slam(need().code, need().token, p.chargeLevel));
+  on('voice:join', (p) => manager.voiceJoin(need().code, need().token, String(p.sid)));
+  on('voice:leave', () => manager.voiceLeave(need().code, need().token));
+  on('voice:signal', (p) => {
+    const s = need();
+    if (!p.data || typeof p.data !== 'object' || JSON.stringify(p.data).length > 30000) throw new RoomError('BAD_SIGNAL', 'Bad signal');
+    const t = manager.voiceTarget(s.code, s.token, p.to);
+    io.to(t.socketId).emit('voice:signal', { from: t.from, fromSid: String(p.fromSid), toSid: String(p.toSid), data: p.data });
+  });
   on('game:next', () => manager.nextRound(need().code, need().token));
   on('game:rematch', () => manager.rematch(need().code, need().token));
 

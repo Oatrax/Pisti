@@ -23,9 +23,12 @@ export class RoomManager {
    * @param {{onUpdate?: (room, events:Array)=>void, autoAdvanceMs?: number|null}} opts
    *   autoAdvanceMs: delay before the next round starts by itself after a round ends (null = manual only)
    */
-  constructor({ onUpdate = () => {}, autoAdvanceMs = 9000 } = {}) {
+  constructor({ onUpdate = () => {}, onCharge = () => {}, autoAdvanceMs = 9000, primeTimeoutMs = 4000, disconnectGraceMs = 30000 } = {}) {
     this.rooms = new Map();
     this.onUpdate = onUpdate;
+    this.onCharge = onCharge;
+    this.primeTimeoutMs = primeTimeoutMs;
+    this.disconnectGraceMs = disconnectGraceMs;
     this.autoAdvanceMs = autoAdvanceMs;
   }
 
@@ -54,7 +57,36 @@ export class RoomManager {
 
   #notify(room, events = []) {
     room.lastActivity = Date.now();
+    this.#watchTurn(room);
     this.onUpdate(room, events);
+  }
+
+  /**
+   * If the player on turn is disconnected, give them a grace period to come back; after that the
+   * server plays their first card so the table is never deadlocked. Reconnecting cancels it.
+   */
+  #watchTurn(room) {
+    const g = room.game;
+    const cur = g && g.phase === 'playing' && !g.primed ? room.players.find((p) => p.seat === g.turn) : null;
+    const key = cur && !cur.socketId ? `${g.roundNo}:${g.turn}:${g.deckCount ?? g.deck.length}:${g.hands[g.turn].length}` : null;
+    if (key === room.watchKey) return;
+    clearTimeout(room.watchTimer);
+    room.watchKey = key;
+    if (!key) return;
+    room.watchTimer = setTimeout(() => this.#autoPlay(room, key), this.disconnectGraceMs);
+    room.watchTimer.unref?.();
+  }
+
+  #autoPlay(room, key) {
+    if (room.watchKey !== key || !room.game) return;
+    room.watchKey = null;
+    if (!room.players.some((p) => p.socketId)) return; // nobody is here: let the room go stale instead
+    const g = room.game;
+    const card = g.hands[g.turn][0];
+    if (!card) return;
+    const events = g.playCard(g.turn, card.id);
+    events.unshift({ type: 'autoplay', seat: events[0].seat ?? g.turn });
+    this.#afterEvents(room, events);
   }
 
   #requireHost(room, player) {
@@ -79,6 +111,7 @@ export class RoomManager {
       players: [],
       hostToken: null,
       game: null,
+      voice: new Map(), // player token -> { sid, socketId } for players who joined voice chat
       timer: null,
       lastActivity: Date.now(),
     };
@@ -127,6 +160,8 @@ export class RoomManager {
       const p = room.players.find((x) => x.socketId === socketId);
       if (p) {
         p.socketId = null;
+        // Drop voice membership only if it belongs to this socket (a refreshed tab may already have re-joined).
+        if (room.voice.get(p.token)?.socketId === socketId) room.voice.delete(p.token);
         this.#notify(room);
       }
     }
@@ -143,11 +178,42 @@ export class RoomManager {
       // Mid-game the seat is held for reconnection.
       player.socketId = null;
     }
+    room.voice.delete(token);
     this.#notify(room);
+  }
+
+  // ---------- voice chat signaling (WebRTC mesh; media never touches the server) ----------
+
+  /** Opt in to voice. `sid` is a per-join id so peers can tell a refreshed tab from the old one. */
+  voiceJoin(code, token, sid) {
+    const room = this.#room(code);
+    const player = this.#player(room, token);
+    if (!/^[A-Za-z0-9-]{8,64}$/.test(sid)) throw new RoomError('BAD_SID', 'Invalid voice session id');
+    if (!player.socketId) throw new RoomError('NOT_CONNECTED', 'Not connected');
+    room.voice.set(token, { sid, socketId: player.socketId });
+    this.#notify(room);
+  }
+
+  voiceLeave(code, token) {
+    const room = this.#room(code);
+    this.#player(room, token);
+    if (room.voice.delete(token)) this.#notify(room);
+  }
+
+  /** Resolve a signaling target: both ends must be in voice. Returns the sender's seat and target socket. */
+  voiceTarget(code, token, toSeat) {
+    const room = this.#room(code);
+    const from = this.#player(room, token);
+    const to = room.players.find((p) => p.seat === toSeat);
+    const target = to && room.voice.get(to.token);
+    if (!room.voice.has(token) || !target) throw new RoomError('NO_PEER', 'Peer is not in voice chat');
+    return { from: from.seat, socketId: target.socketId };
   }
 
   #destroy(room) {
     clearTimeout(room.timer);
+    clearTimeout(room.primeTimer);
+    clearTimeout(room.watchTimer);
     this.rooms.delete(room.code);
   }
 
@@ -182,6 +248,8 @@ export class RoomManager {
 
   #newGame(room) {
     clearTimeout(room.timer);
+    clearTimeout(room.primeTimer);
+    room.nextAt = null;
     room.game = new PistiGame({ playerCount: room.maxPlayers, targetScore: room.targetScore });
     room.status = 'playing';
     this.#notify(room, [{ type: 'roundStart', roundNo: 1 }]);
@@ -193,25 +261,74 @@ export class RoomManager {
     if (room.status !== 'playing') throw new RoomError('BAD_PHASE', 'No game in progress');
     let events;
     try {
-      events = room.game.playCard(player.seat, cardId);
+      events = room.game.playCard(player.seat, cardId, { prime: true });
     } catch (e) {
-      if (e instanceof GameError) throw new RoomError(e.code, e.message);
-      throw e;
+      throw this.#wrap(e);
     }
+    if (room.game.primed) {
+      // Auto-slam fallback if the player disconnects or never releases.
+      clearTimeout(room.primeTimer);
+      room.primeTimer = setTimeout(() => this.#autoSlam(room), this.primeTimeoutMs);
+      room.primeTimer.unref?.();
+      events[0].timeoutMs = this.primeTimeoutMs;
+    }
+    this.#afterEvents(room, events);
+  }
+
+  #wrap(e) {
+    return e instanceof GameError ? new RoomError(e.code, e.message) : e;
+  }
+
+  #afterEvents(room, events) {
     if (room.game.phase === 'matchOver') room.status = 'finished';
     if (room.game.phase === 'roundOver') this.#scheduleNextRound(room);
     this.#notify(room, events);
   }
 
+  /** Relay of the primed player's charge level; ephemeral, not part of room state. */
+  charge(code, token, level) {
+    const room = this.#room(code);
+    const player = this.#player(room, token);
+    const now = Date.now();
+    if (now - (room.lastCharge ?? 0) < 40) return; // throttle
+    if (!room.game?.setCharge(player.seat, level)) return;
+    room.lastCharge = now;
+    this.onCharge(room, player.seat, room.game.primed.charge);
+  }
+
+  slam(code, token, chargeLevel) {
+    const room = this.#room(code);
+    const player = this.#player(room, token);
+    if (!room.game) throw new RoomError('BAD_PHASE', 'No game in progress');
+    let events;
+    try {
+      events = room.game.slam(player.seat, chargeLevel);
+    } catch (e) {
+      throw this.#wrap(e);
+    }
+    clearTimeout(room.primeTimer);
+    this.#afterEvents(room, events);
+  }
+
+  #autoSlam(room) {
+    const primed = room.game?.primed;
+    if (!primed) return;
+    const events = room.game.slam(primed.seat, primed.charge);
+    events[0].auto = true;
+    this.#afterEvents(room, events);
+  }
+
   #scheduleNextRound(room) {
     clearTimeout(room.timer);
     if (this.autoAdvanceMs == null) return;
+    room.nextAt = Date.now() + this.autoAdvanceMs;
     room.timer = setTimeout(() => this.#advanceRound(room), this.autoAdvanceMs);
     room.timer.unref?.();
   }
 
   #advanceRound(room) {
     clearTimeout(room.timer);
+    room.nextAt = null;
     if (room.game?.phase !== 'roundOver') return;
     this.#notify(room, room.game.startNextRound());
   }
@@ -225,7 +342,10 @@ export class RoomManager {
 
   rematch(code, token) {
     const room = this.#room(code);
-    this.#requireHost(room, this.#player(room, token));
+    const player = this.#player(room, token);
+    // If the host has dropped, any connected player may start the rematch so the room is not stuck.
+    const host = room.players.find((p) => p.token === room.hostToken);
+    if (host?.socketId) this.#requireHost(room, player);
     if (room.status !== 'finished') throw new RoomError('BAD_PHASE', 'The match is not over');
     this.#newGame(room);
   }
@@ -241,7 +361,10 @@ export class RoomManager {
       mySeat: player.seat,
       hostSeat: room.players.find((p) => p.token === room.hostToken)?.seat ?? null,
       players: room.players.map((p) => ({ seat: p.seat, name: p.name, connected: p.socketId !== null })),
-      game: room.game ? room.game.viewFor(player.seat) : null,
+      voice: Object.fromEntries(room.players.filter((p) => room.voice.has(p.token)).map((p) => [p.seat, room.voice.get(p.token).sid])),
+      game: room.game
+        ? { ...room.game.viewFor(player.seat), nextRoundIn: room.nextAt ? Math.max(0, room.nextAt - Date.now()) : 0, nextRoundMs: room.nextAt ? this.autoAdvanceMs : 0 }
+        : null,
     };
   }
 
